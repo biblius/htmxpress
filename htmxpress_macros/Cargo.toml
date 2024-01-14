@@ -1,0 +1,19 @@
+[package]
+name = "htmxpress_macros"
+version = "0.0.0"
+edition = "2021"
+authors = ["biblius <crazycompanyxxl@gmail.com>"]
+description = "Procedural macros for generating htmx strings"
+homepage = "https://github.com/biblius/htmxpress"
+readme = "../README.md"
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+proc-macro-error = "1.0.4"
+quote = "1.0.35"
+syn = { version = "2.0.48", features = ["full"] }
