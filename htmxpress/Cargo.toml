@@ -11,5 +11,5 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#htmxpress_macros = { path = "../htmxpress_macros" }
-htmxpress_macros = "0.0.0"
+htmxpress_macros = { path = "../htmxpress_macros" }
+#htmxpress_macros = "0.0.0"

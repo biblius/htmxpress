@@ -6,7 +6,7 @@ version = 3
 name = "htmxpress"
 version = "0.0.0"
 dependencies = [
- "htmxpress_macros 0.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "htmxpress_macros",
 ]
 
 [[package]]
@@ -14,17 +14,7 @@ name = "htmxpress_macros"
 version = "0.0.0"
 dependencies = [
  "proc-macro-error",
- "quote",
- "syn 2.0.48",
-]
-
-[[package]]
-name = "htmxpress_macros"
-version = "0.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09851caa28111c819dbdac1a14646892c717008a8186fc74000b58550ae4e8af"
-dependencies = [
- "proc-macro-error",
+ "proc-macro2",
  "quote",
  "syn 2.0.48",
 ]
