@@ -1,13 +1,13 @@
 use htmxpress::HtmxElement;
 
 #[derive(Debug, htmxpress::Element)]
-#[element(div)]
+#[element("div")]
 #[hx_post("/somewhere/{}", some_property)]
 struct Parent {
     some_property: String,
 
-    #[element(p)]
-    #[hx_get("/somewhere/something")]
+    #[element("p")]
+    #[hx_get("/somewhere/else")]
     #[format("I am a p! {}")]
     my_p: String,
 
@@ -16,12 +16,12 @@ struct Parent {
 }
 
 #[derive(Debug, htmxpress::Element)]
-#[element(div)]
-#[id("child")]
-#[class("child-class")]
+#[element("div")]
+#[attrs(id = "child", class = "child-class")]
 #[hx_get("/elsewhere")]
 struct Child {
-    #[element(p)]
+    #[element("p")]
+    #[attr("id" = "keepit{}", meaning_of_life)]
     #[format("Always keep it {}")]
     meaning_of_life: usize,
 }
@@ -36,5 +36,8 @@ fn works() {
         },
     };
 
+    let htmx = r#"<div hx-post="/somewhere/something"><p hx-get="/somewhere/else">I am a p! Hello World!</p><div hx-get="/elsewhere" id="child" class="child-class"><p id="keepit69">Always keep it 69</p></div></div>"#;
+
     println!("{}", parent.to_htmx());
+    assert_eq!(htmx, parent.to_htmx());
 }

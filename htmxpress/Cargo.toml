@@ -12,4 +12,5 @@ license = "MIT"
 
 [dependencies]
 htmxpress_macros = { path = "../htmxpress_macros" }
+http = "1.0.0"
 #htmxpress_macros = "0.0.0"
