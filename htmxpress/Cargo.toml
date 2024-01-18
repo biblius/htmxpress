@@ -13,4 +13,10 @@ license = "MIT"
 [dependencies]
 htmxpress_macros = { path = "../htmxpress_macros" }
 http = "1.0.0"
+urlencoding = { version = "2.1.3", optional = true }
 #htmxpress_macros = "0.0.0"
+
+[features]
+default = ["full"]
+full = ["urlencoding"]
+urlencoding = ["dep:urlencoding"]

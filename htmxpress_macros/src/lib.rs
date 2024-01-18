@@ -13,11 +13,13 @@ const NEST_ATTR: &str = "nest";
 const FORMAT_ATTR: &str = "format";
 const ATTRS_ATTR: &str = "attrs";
 const ATTR_ATTR: &str = "attr";
+const LIST_ATTR: &str = "list";
 const HX_GET_ATTR: &str = "hx_get";
 const HX_POST_ATTR: &str = "hx_post";
 const HX_PATCH_ATTR: &str = "hx_patch";
 const HX_PUT_ATTR: &str = "hx_put";
 const HX_DELETE_ATTR: &str = "hx_delete";
+const ENCODE_ATTR: &str = "urlencode";
 
 const HTMX_METHODS: [&str; 5] = [
     HX_GET_ATTR,
@@ -30,7 +32,8 @@ const HTMX_METHODS: [&str; 5] = [
 #[proc_macro_derive(
     Element,
     attributes(
-        element, attrs, attr, format, nest, hx, hx_get, hx_post, hx_put, hx_patch, hx_delete,
+        element, list, attrs, attr, format, nest, urlencode, hx_get, hx_post, hx_put, hx_patch,
+        hx_delete
     )
 )]
 #[proc_macro_error]
@@ -84,19 +87,68 @@ impl HtmxStruct {
             abort!(strct.span(), "Element can only be derived on structs");
         };
 
-        for field in strct.fields.iter() {
+        'fields: for field in strct.fields.iter() {
             // Extract element from attributes
-            if let Some(element) =
-                HtmxFieldElement::collect_from(field.ident.as_ref().unwrap(), &field.attrs)
-            {
-                this.inner_tokens.extend(element.to_tokens())
-            }
+            let element =
+                HtmxFieldElement::collect_from(field.ident.as_ref().unwrap(), &field.attrs);
 
             // Handle nested structs
             for attr in field.attrs.iter() {
                 let Some(id) = attr.meta.path().get_ident() else {
                     continue;
                 };
+
+                if id == LIST_ATTR {
+                    match attr.meta.require_path_only() {
+                        Ok(_) => {
+                            if element.html_element.is_none() {
+                                abort!(
+                                    attr.meta.span(),
+                                    "list must have a corresponding element or nested struct"
+                                )
+                            }
+                            this.inner_tokens.extend(element.to_tokens(true));
+                            continue 'fields;
+                        }
+                        Err(_) => {
+                            let Ok(list) = attr.meta.require_list() else {
+                                abort!(
+                                    attr.meta.span(),
+                                    "invalid list attribute, expected `list` or `list(nested)`"
+                                )
+                            };
+
+                            let Ok(ident) = list.parse_args::<Ident>() else {
+                                abort!(
+                                    attr.meta.span(),
+                                    "invalid list attribute, expected list(nested)"
+                                )
+                            };
+
+                            if ident != "nest" {
+                                abort!(
+                                    attr.meta.span(),
+                                    "invalid list attribute, expected list(nested)"
+                                )
+                            }
+
+                            let ident = field
+                                .ident
+                                .as_ref()
+                                .unwrap_or_else(|| abort!(field.ident.span(), "invalid field"));
+
+                            this.inner_tokens.extend(quote!(
+                                {
+                                    for el in self.#ident.iter() {
+                                        let nested = el.to_htmx();
+                                        let _ = write!(html, "{nested}");
+                                    }
+                                }
+                            ));
+                            continue 'fields;
+                        }
+                    }
+                }
 
                 if id == NEST_ATTR {
                     let syn::Type::Path(ref path) = field.ty else {
@@ -124,6 +176,10 @@ impl HtmxStruct {
                     this.inner_tokens.extend(tokens);
                 }
             }
+
+            if element.html_element.is_some() {
+                this.inner_tokens.extend(element.to_tokens(false))
+            }
         }
 
         this
@@ -134,12 +190,16 @@ impl HtmxStruct {
 struct HtmxFieldElement {
     /// Name of the field annotated with `element`
     field_name: Ident,
-    html_element: String,
+
+    /// The element from the attributes
+    html_element: Option<String>,
+
+    /// Element attributes
     attrs: HtmlAttributes,
 }
 
 impl HtmxFieldElement {
-    fn to_tokens(&self) -> proc_macro2::TokenStream {
+    fn to_tokens(&self, list: bool) -> TokenStream {
         let Self {
             field_name,
             html_element,
@@ -152,15 +212,21 @@ impl HtmxFieldElement {
             request,
         } = attrs.attr_tokens();
 
+        let _self = if list {
+            quote!(el)
+        } else {
+            quote!(self.#field_name)
+        };
+
         let content = attrs
             .format_str
             .as_ref()
-            .map(|fmt| quote!(let content = format!(#fmt, self.#field_name);))
-            .unwrap_or_else(|| quote!(let content = format!("{}", self.#field_name);));
+            .map(|fmt| quote!(let content = format!(#fmt, #_self);))
+            .unwrap_or_else(|| quote!(let content = format!("{}", #_self);));
 
         let element = quote!(let element = #html_element;);
 
-        quote!(
+        let el = quote!(
             {
                 let mut attributes = String::new();
                 #dyn_attrs
@@ -170,16 +236,26 @@ impl HtmxFieldElement {
                 #element
                 let _ = write!(html, r#"<{element}{request}{attributes}>{content}</{element}>"#);
             }
-        )
+        );
+
+        if list {
+            quote!(
+                for el in self.#field_name.iter() {
+                    #el
+                }
+            )
+        } else {
+            el
+        }
     }
 
     /// Collect all attributes related to HTML
     ///
     /// Ignores the `nest` attribute
-    fn collect_from(field_name: &Ident, attrs: &[Attribute]) -> Option<Self> {
+    fn collect_from(field_name: &Ident, attrs: &[Attribute]) -> Self {
         let mut element = Self {
             field_name: field_name.clone(),
-            html_element: String::new(),
+            html_element: None,
             attrs: HtmlAttributes::collect_from(attrs),
         };
 
@@ -188,22 +264,16 @@ impl HtmxFieldElement {
             .filter_map(|attr| Some(attr.path().get_ident()?.to_string()))
             .collect::<Vec<_>>();
 
-        let is_element = _attrs.contains(&ELEMENT_ATTR.to_string());
-
-        if !is_element {
-            return None;
-        }
-
         for attr in attrs {
             let Some(id) = attr.meta.path().get_ident() else {
                 continue;
             };
             if id == ELEMENT_ATTR {
-                element.html_element = parse_str(attr)
+                element.html_element = Some(parse_str(attr));
             }
         }
 
-        Some(element)
+        element
     }
 }
 
@@ -295,6 +365,11 @@ impl HtmlAttributes {
     fn collect_from(attrs: &[Attribute]) -> Self {
         let mut this = Self::default();
 
+        let _attrs = attrs
+            .iter()
+            .filter_map(|a| Some(a.path().get_ident()?.to_string()))
+            .collect::<Vec<_>>();
+
         for attr in attrs {
             let Some(id) = attr.meta.path().get_ident() else {
                 continue;
@@ -307,7 +382,10 @@ impl HtmlAttributes {
                         "cannot have more than one htmx method on element"
                     )
                 }
-                let hx_req = parse_htmx_request(attr);
+
+                let encode = _attrs.contains(&ENCODE_ATTR.to_string());
+
+                let hx_req = parse_htmx_request(attr, encode);
                 this.hx_req = Some(hx_req);
                 continue;
             }
@@ -327,6 +405,7 @@ impl HtmlAttributes {
             if id == ATTRS_ATTR {
                 let attrs = parse_name_values(attr);
                 this.attributes.extend(attrs);
+                continue;
             }
 
             if id == ATTR_ATTR {
@@ -378,7 +457,7 @@ impl HtmlAttributes {
                     HtmxMethod::Delete => "hx-delete",
                     HtmxMethod::Patch => "hx-patch",
                 };
-                hx_req.params.to_tokens(method)
+                hx_req.params.to_tokens(method, hx_req.encode)
             })
             .unwrap_or(quote!(let request = String::new();));
 
@@ -457,7 +536,7 @@ fn parse_format(attr: &Attribute) -> LitStr {
         .unwrap_or_else(|e| abort!(attr.meta.span(), format!("{e}")))
 }
 
-fn parse_htmx_request(attr: &Attribute) -> HtmxRequest {
+fn parse_htmx_request(attr: &Attribute, encode: bool) -> HtmxRequest {
     let (list, ident) = extract_list_and_args(attr);
 
     let method = match ident.to_string().as_str() {
@@ -473,7 +552,11 @@ fn parse_htmx_request(attr: &Attribute) -> HtmxRequest {
         .parse_args()
         .unwrap_or_else(|e| abort!(list.span(), &format!("{e}")));
 
-    HtmxRequest { method, params }
+    HtmxRequest {
+        method,
+        params,
+        encode,
+    }
 }
 
 fn parse_dyn_attr(attr: &Attribute) -> DynamicAttr {
@@ -521,6 +604,9 @@ struct DynamicAttr {
 struct HtmxRequest {
     method: HtmxMethod,
     params: FormatParams,
+
+    /// Whether or not to url encode the path
+    encode: bool,
 }
 
 #[derive(Debug)]
@@ -541,7 +627,7 @@ struct FormatParams {
     /// could just be a raw string without any substitutions.
     fmt: LitStr,
 
-    /// Optional args for the fmt, i.e. fields on this struct.
+    /// Optional args for the fmt used for self fields.
     args: Vec<Ident>,
 }
 
@@ -552,18 +638,34 @@ impl FormatParams {
     /// The resulting string (the one created by the tokens) will be:
     ///
     /// ` attribute=format!(self.fmt, self.args)`
-    fn to_tokens(&self, attribute: &str) -> TokenStream {
+    fn to_tokens(&self, attribute: &str, encode: bool) -> TokenStream {
         let fmt = &self.fmt;
         let args = &self.args;
 
         if args.is_empty() {
-            let path = format!(r#" {attribute}="{}""#, fmt.value());
+            let value = fmt.value();
+
+            // Abort if encode and no args
+            if encode {
+                abort!(
+                    fmt.span(),
+                    r#"urlencode is only supported for parameterised formats, e.g. `#[method("foo={}", bar)]`"#
+                )
+            }
 
             quote!(
-                let request = #path;
+                let attribute = #attribute;
+                let path = format!(r#" {attribute}="{}""#, #value);
+                let request = path;
             )
         } else {
-            let args = args.iter().map(|field| quote!(self.#field));
+            let args = args.iter().map(|field| {
+                if encode {
+                    quote!(htmxpress::urlencoding::encode(&self.#field))
+                } else {
+                    quote!(self.#field)
+                }
+            });
             let path = format!(r#" {attribute}="{}""#, fmt.value());
 
             quote!(
