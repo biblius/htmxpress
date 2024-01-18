@@ -20,6 +20,7 @@ const HX_PATCH_ATTR: &str = "hx_patch";
 const HX_PUT_ATTR: &str = "hx_put";
 const HX_DELETE_ATTR: &str = "hx_delete";
 const ENCODE_ATTR: &str = "urlencode";
+const DEFAULT_ATTR: &str = "default";
 
 const HTMX_METHODS: [&str; 5] = [
     HX_GET_ATTR,
@@ -33,7 +34,7 @@ const HTMX_METHODS: [&str; 5] = [
     Element,
     attributes(
         element, list, attrs, attr, format, nest, urlencode, hx_get, hx_post, hx_put, hx_patch,
-        hx_delete
+        hx_delete, default
     )
 )]
 #[proc_macro_error]
@@ -96,11 +97,8 @@ impl HtmxStruct {
             }
 
             // Extract element from attributes
-            let element = HtmxFieldElement::collect_from(
-                field.ident.as_ref().unwrap(),
-                &field.attrs,
-                optional,
-            );
+            let element =
+                collect_htmx_field_el(field.ident.as_ref().unwrap(), &field.attrs, optional);
 
             // Handle nested structs
             for attr in field.attrs.iter() {
@@ -207,7 +205,11 @@ struct HtmxFieldElement {
     /// Element attributes
     attrs: HtmlAttributes,
 
+    /// Necessary for tokens when the field is an option
     optional: bool,
+
+    /// The default value for None if used with optional
+    default: Option<String>,
 }
 
 impl HtmxFieldElement {
@@ -217,6 +219,7 @@ impl HtmxFieldElement {
             html_element,
             attrs,
             optional,
+            default,
         } = self;
 
         let AttributeTokens {
@@ -225,7 +228,7 @@ impl HtmxFieldElement {
             request,
         } = attrs.attr_tokens();
 
-        let _self = if list || *optional {
+        let _self = if list || *optional && default.is_none() {
             quote!(el)
         } else {
             quote!(self.#field_name)
@@ -234,8 +237,20 @@ impl HtmxFieldElement {
         let content = attrs
             .format_str
             .as_ref()
-            .map(|fmt| quote!(let content = format!(#fmt, #_self);))
-            .unwrap_or_else(|| quote!(let content = format!("{}", #_self);));
+            .map(|fmt| {
+                if let Some(default) = default {
+                    quote!(let content = format!(#fmt, #_self.as_deref().unwrap_or(#default));)
+                } else {
+                    quote!(let content = format!(#fmt, #_self);)
+                }
+            })
+            .unwrap_or_else(|| {
+                if let Some(default) = default {
+                    quote!(let content = format!("{}", #_self.as_deref().unwrap_or(#default));)
+                } else {
+                    quote!(let content = format!("{}", #_self);)
+                }
+            });
 
         let element = quote!(let element = #html_element;);
 
@@ -251,7 +266,7 @@ impl HtmxFieldElement {
             }
         );
 
-        if *optional {
+        if *optional && default.is_none() {
             el = quote!(
                 if let Some(ref el) = self.#field_name {
                     #el
@@ -260,43 +275,59 @@ impl HtmxFieldElement {
         }
 
         if list {
-            quote!(
+            el = quote!(
                 for el in self.#field_name.iter() {
                     #el
                 }
             )
-        } else {
-            el
         }
-    }
 
-    /// Collect all attributes related to HTML
-    ///
-    /// Ignores the `nest` attribute
-    fn collect_from(field_name: &Ident, attrs: &[Attribute], optional: bool) -> Self {
-        let mut element = Self {
-            field_name: field_name.clone(),
-            html_element: None,
-            attrs: HtmlAttributes::collect_from(attrs),
-            optional,
+        el
+    }
+}
+
+/// Collect all attributes related to HTML
+///
+/// Ignores the `nest` attribute
+fn collect_htmx_field_el(
+    field_name: &Ident,
+    attrs: &[Attribute],
+    optional: bool,
+) -> HtmxFieldElement {
+    let el_attrs = collect_html_attrs(attrs);
+
+    let mut element = HtmxFieldElement {
+        field_name: field_name.clone(),
+        html_element: None,
+        attrs: el_attrs,
+        optional,
+        default: None,
+    };
+
+    let mut _attrs = attrs
+        .iter()
+        .filter_map(|attr| Some(attr.path().get_ident()?.to_string()))
+        .collect::<Vec<_>>();
+
+    for attr in attrs {
+        let Some(id) = attr.meta.path().get_ident() else {
+            continue;
         };
 
-        let mut _attrs = attrs
-            .iter()
-            .filter_map(|attr| Some(attr.path().get_ident()?.to_string()))
-            .collect::<Vec<_>>();
-
-        for attr in attrs {
-            let Some(id) = attr.meta.path().get_ident() else {
-                continue;
-            };
-            if id == ELEMENT_ATTR {
-                element.html_element = Some(parse_str(attr));
+        if id == DEFAULT_ATTR {
+            if !optional {
+                abort!(id.span(), "the `default` attr is valid only on options")
             }
+
+            element.default = Some(parse_str(attr))
         }
 
-        element
+        if id == ELEMENT_ATTR {
+            element.html_element = Some(parse_str(attr));
+        }
     }
+
+    element
 }
 
 #[derive(Debug, Default)]
@@ -350,7 +381,7 @@ impl HtmxStructElement {
     fn collect_from(attrs: &[Attribute]) -> Option<Self> {
         let mut element = Self {
             html_element: None,
-            attrs: HtmlAttributes::collect_from(attrs),
+            attrs: collect_html_attrs(attrs),
         };
 
         for attr in attrs {
@@ -383,62 +414,62 @@ struct HtmlAttributes {
     hx_req: Option<HtmxRequest>,
 }
 
-impl HtmlAttributes {
-    fn collect_from(attrs: &[Attribute]) -> Self {
-        let mut this = Self::default();
+fn collect_html_attrs(attrs: &[Attribute]) -> HtmlAttributes {
+    let mut this = HtmlAttributes::default();
 
-        let _attrs = attrs
-            .iter()
-            .filter_map(|a| Some(a.path().get_ident()?.to_string()))
-            .collect::<Vec<_>>();
+    let _attrs = attrs
+        .iter()
+        .filter_map(|a| Some(a.path().get_ident()?.to_string()))
+        .collect::<Vec<_>>();
 
-        for attr in attrs {
-            let Some(id) = attr.meta.path().get_ident() else {
-                continue;
-            };
+    for attr in attrs {
+        let Some(id) = attr.meta.path().get_ident() else {
+            continue;
+        };
 
-            if HTMX_METHODS.contains(&id.to_string().as_str()) {
-                if this.hx_req.is_some() {
-                    abort!(
-                        attr.span(),
-                        "cannot have more than one htmx method on element"
-                    )
-                }
-
-                let encode = _attrs.contains(&ENCODE_ATTR.to_string());
-
-                let hx_req = parse_htmx_request(attr, encode);
-                this.hx_req = Some(hx_req);
-                continue;
+        if HTMX_METHODS.contains(&id.to_string().as_str()) {
+            if this.hx_req.is_some() {
+                abort!(
+                    attr.span(),
+                    "cannot have more than one htmx method on element"
+                )
             }
 
-            if id == FORMAT_ATTR {
-                if this.format_str.is_some() {
-                    abort!(
-                        attr.span(),
-                        "cannot have more than one format str on element"
-                    )
-                }
-                let format = parse_format(attr);
-                this.format_str = Some(format);
-                continue;
-            }
+            let encode = _attrs.contains(&ENCODE_ATTR.to_string());
 
-            if id == ATTRS_ATTR {
-                let attrs = parse_name_values(attr);
-                this.attributes.extend(attrs);
-                continue;
-            }
-
-            if id == ATTR_ATTR {
-                let attr = parse_dyn_attr(attr);
-                this.dyn_attributes.push(attr);
-            }
+            let hx_req = parse_htmx_request(attr, encode);
+            this.hx_req = Some(hx_req);
+            continue;
         }
 
-        this
+        if id == FORMAT_ATTR {
+            if this.format_str.is_some() {
+                abort!(
+                    attr.span(),
+                    "cannot have more than one format str on element"
+                )
+            }
+            let format = parse_format(attr);
+            this.format_str = Some(format);
+            continue;
+        }
+
+        if id == ATTRS_ATTR {
+            let attrs = parse_name_values(attr);
+            this.attributes.extend(attrs);
+            continue;
+        }
+
+        if id == ATTR_ATTR {
+            let attr = parse_dyn_attr(attr);
+            this.dyn_attributes.push(attr);
+        }
     }
 
+    this
+}
+
+impl HtmlAttributes {
     pub fn attr_tokens(&self) -> AttributeTokens {
         let static_attrs = self
             .attributes
