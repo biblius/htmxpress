@@ -88,9 +88,19 @@ impl HtmxStruct {
         };
 
         'fields: for field in strct.fields.iter() {
+            let mut optional = false;
+            if let syn::Type::Path(ref p) = field.ty {
+                if let Some(seg) = p.path.segments.first() {
+                    optional = seg.ident == "Option"
+                }
+            }
+
             // Extract element from attributes
-            let element =
-                HtmxFieldElement::collect_from(field.ident.as_ref().unwrap(), &field.attrs);
+            let element = HtmxFieldElement::collect_from(
+                field.ident.as_ref().unwrap(),
+                &field.attrs,
+                optional,
+            );
 
             // Handle nested structs
             for attr in field.attrs.iter() {
@@ -196,6 +206,8 @@ struct HtmxFieldElement {
 
     /// Element attributes
     attrs: HtmlAttributes,
+
+    optional: bool,
 }
 
 impl HtmxFieldElement {
@@ -204,6 +216,7 @@ impl HtmxFieldElement {
             field_name,
             html_element,
             attrs,
+            optional,
         } = self;
 
         let AttributeTokens {
@@ -212,7 +225,7 @@ impl HtmxFieldElement {
             request,
         } = attrs.attr_tokens();
 
-        let _self = if list {
+        let _self = if list || *optional {
             quote!(el)
         } else {
             quote!(self.#field_name)
@@ -226,7 +239,7 @@ impl HtmxFieldElement {
 
         let element = quote!(let element = #html_element;);
 
-        let el = quote!(
+        let mut el = quote!(
             {
                 let mut attributes = String::new();
                 #dyn_attrs
@@ -237,6 +250,14 @@ impl HtmxFieldElement {
                 let _ = write!(html, r#"<{element}{request}{attributes}>{content}</{element}>"#);
             }
         );
+
+        if *optional {
+            el = quote!(
+                if let Some(ref el) = self.#field_name {
+                    #el
+                }
+            )
+        }
 
         if list {
             quote!(
@@ -252,11 +273,12 @@ impl HtmxFieldElement {
     /// Collect all attributes related to HTML
     ///
     /// Ignores the `nest` attribute
-    fn collect_from(field_name: &Ident, attrs: &[Attribute]) -> Self {
+    fn collect_from(field_name: &Ident, attrs: &[Attribute], optional: bool) -> Self {
         let mut element = Self {
             field_name: field_name.clone(),
             html_element: None,
             attrs: HtmlAttributes::collect_from(attrs),
+            optional,
         };
 
         let mut _attrs = attrs
