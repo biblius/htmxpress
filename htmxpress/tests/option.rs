@@ -19,6 +19,20 @@ struct Test {
     qua: Option<String>,
 }
 
+#[derive(Element)]
+struct TestTwo {
+    #[nest]
+    _foo: Option<Child>,
+}
+
+#[derive(Element)]
+struct Child {
+    #[element("p")]
+    #[format("c: {}")]
+    #[default("foo")]
+    c: Option<String>,
+}
+
 #[test]
 fn works() {
     let test = Test {
@@ -29,7 +43,18 @@ fn works() {
     };
     let html = r#"<p>bar: 420</p><p>foo</p><p>quack</p>"#;
 
-    println!("{}", test.to_htmx());
+    assert_eq!(html, test.to_htmx())
+}
+
+#[test]
+fn works_nested() {
+    let test = TestTwo {
+        _foo: Some(Child {
+            c: Some("s".to_string()),
+        }),
+    };
+
+    let html = r#"<p>c: s</p>"#;
 
     assert_eq!(html, test.to_htmx())
 }

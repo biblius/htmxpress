@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
 use syn::{
@@ -21,6 +21,7 @@ const HX_PUT_ATTR: &str = "hx_put";
 const HX_DELETE_ATTR: &str = "hx_delete";
 const ENCODE_ATTR: &str = "urlencode";
 const DEFAULT_ATTR: &str = "default";
+const HX_ATTR: &str = "hx";
 
 const HTMX_METHODS: [&str; 5] = [
     HX_GET_ATTR,
@@ -33,7 +34,7 @@ const HTMX_METHODS: [&str; 5] = [
 #[proc_macro_derive(
     Element,
     attributes(
-        element, list, attrs, attr, format, nest, urlencode, hx_get, hx_post, hx_put, hx_patch,
+        element, list, attrs, attr, format, nest, urlencode, hx, hx_get, hx_post, hx_put, hx_patch,
         hx_delete, default
     )
 )]
@@ -159,14 +160,6 @@ impl HtmxStruct {
                 }
 
                 if id == NEST_ATTR {
-                    let syn::Type::Path(ref path) = field.ty else {
-                        abort!(
-                            field.ty.span(),
-                            "nest can only be used on fields that implement Element"
-                        );
-                    };
-
-                    let path = path.path.clone();
                     let field_name = field.ident.as_ref().unwrap_or_else(|| {
                         abort!(
                             field.span(),
@@ -174,12 +167,26 @@ impl HtmxStruct {
                         )
                     });
 
-                    let tokens = quote!(
+                    let _self = if optional {
+                        quote!(#field_name)
+                    } else {
+                        quote!(&self.#field_name)
+                    };
+
+                    let mut tokens = quote!(
                         {
-                            let nested = <#path as htmxpress::HtmxElement>::to_htmx(&self.#field_name);
+                            let nested = #_self.to_htmx();
                             let _ = write!(html, "{nested}");
                         }
                     );
+
+                    if optional {
+                        tokens = quote!(
+                            if let Some(ref #field_name) = self.#field_name {
+                                #tokens
+                            }
+                        )
+                    }
 
                     this.inner_tokens.extend(tokens);
                 }
@@ -225,6 +232,7 @@ impl HtmxFieldElement {
         let AttributeTokens {
             static_attrs,
             dyn_attrs,
+            hx_attrs,
             request,
         } = attrs.attr_tokens();
 
@@ -259,6 +267,7 @@ impl HtmxFieldElement {
                 let mut attributes = String::new();
                 #dyn_attrs
                 #static_attrs
+                #hx_attrs
                 #request
                 #content
                 #element
@@ -319,7 +328,8 @@ fn collect_htmx_field_el(
                 abort!(id.span(), "the `default` attr is valid only on options")
             }
 
-            element.default = Some(parse_str(attr))
+            element.default = Some(parse_str(attr));
+            continue;
         }
 
         if id == ELEMENT_ATTR {
@@ -348,6 +358,7 @@ impl HtmxStructElement {
             static_attrs,
             request,
             dyn_attrs,
+            hx_attrs,
         } = attrs.attr_tokens();
 
         Some(quote!(
@@ -355,6 +366,7 @@ impl HtmxStructElement {
                 let mut attributes = String::new();
                 #dyn_attrs
                 #static_attrs
+                #hx_attrs
                 #request
                 #element
                 let _ = write!(html, r#"<{element}{request}{attributes}>"#);
@@ -379,9 +391,11 @@ impl HtmxStructElement {
     ///
     /// Ignores the `nest` attribute
     fn collect_from(attrs: &[Attribute]) -> Option<Self> {
+        let el_attrs = collect_html_attrs(attrs);
+
         let mut element = Self {
             html_element: None,
-            attrs: collect_html_attrs(attrs),
+            attrs: el_attrs,
         };
 
         for attr in attrs {
@@ -404,8 +418,11 @@ struct HtmlAttributes {
     /// any hx-*="*" attributes other than AJAX
     attributes: Vec<(String, String)>,
 
-    /// HTML attributes from single `attr` and `hx` attributes
+    /// HTML attributes obtained from `attr`
     dyn_attributes: Vec<DynamicAttr>,
+
+    /// hx-* attributes from `hx`
+    hx_attributes: Vec<(String, String)>,
 
     /// Format string for the inner content.
     format_str: Option<LitStr>,
@@ -464,6 +481,11 @@ fn collect_html_attrs(attrs: &[Attribute]) -> HtmlAttributes {
             let attr = parse_dyn_attr(attr);
             this.dyn_attributes.push(attr);
         }
+
+        if id == HX_ATTR {
+            let attrs = parse_hx_attrs(attr);
+            this.hx_attributes.extend(attrs)
+        }
     }
 
     this
@@ -499,6 +521,20 @@ impl HtmlAttributes {
             })
             .collect();
 
+        let hx_attrs = self
+            .hx_attributes
+            .iter()
+            .map(|(key, val)| {
+                let var = Ident::new("hx_attr", Span::call_site());
+                quote!(
+                    {
+                        let #var = format!(r#" {}="{}""#, #key, #val);
+                        let _ = write!(attributes, "{}", #var);
+                    }
+                )
+            })
+            .collect();
+
         let request = self
             .hx_req
             .as_ref()
@@ -517,6 +553,7 @@ impl HtmlAttributes {
         AttributeTokens {
             static_attrs,
             dyn_attrs,
+            hx_attrs,
             request,
         }
     }
@@ -531,8 +568,53 @@ struct AttributeTokens {
     /// Attribute tokens that use struct fields. Obtained from `attr`
     dyn_attrs: TokenStream,
 
+    /// Attribute tokens obtained from `hx`
+    hx_attrs: TokenStream,
+
     /// The hx-method tokens
     request: TokenStream,
+}
+
+fn parse_hx_attrs(attr: &Attribute) -> Vec<(String, String)> {
+    let list = attr.meta.require_list().unwrap_or_else(|_| {
+        abort!(
+            attr.meta.span(),
+            r#"expected key value list, e.g. `hx("target" = "foo")`"#
+        )
+    });
+
+    list.parse_args_with(|input: ParseStream| {
+        let mut attrs = vec![];
+
+        loop {
+            if input.is_empty() {
+                break;
+            }
+            let key = input.parse::<LitStr>()?;
+
+            input.parse::<Token![=]>()?;
+
+            let value = input.parse::<LitStr>()?;
+
+            attrs.push((format!("hx-{}", key.value()), value.value()));
+
+            if input.is_empty() {
+                break;
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        Ok(attrs)
+    })
+    .unwrap_or_else(|e| {
+        abort!(
+            attr.meta.span(),
+            format!(r#"{e}, expected key value list, e.g. `hx("target" = "foo")`"#)
+        )
+    })
 }
 
 fn parse_name_values(attr: &Attribute) -> Vec<(String, String)> {
@@ -555,7 +637,8 @@ fn parse_name_values(attr: &Attribute) -> Vec<(String, String)> {
             let key = p
                 .path
                 .require_ident()
-                .unwrap_or_else(|_| abort!(p.span(), "attrs key-value must be ident-string"));
+                .unwrap_or_else(|_| abort!(p.span(), "attrs key=value must be str=str"));
+
             let syn::Expr::Lit(lit) = p.value else {
                 abort!(p.value.span(), "values in attrs must be string literals")
             };

@@ -49,6 +49,6 @@ Todo List:
 
 - [x] Basic HTML
 - [x] Ajax attributes
-- [] Attributes for collections for ez lists
+- [x] Attributes for collections for ez lists
 - [] Response trait
 - [] hx headers for response trait

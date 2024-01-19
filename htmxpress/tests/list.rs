@@ -30,5 +30,6 @@ fn works() {
     };
 
     let html = r#"<ul><li>foo</li><li>bar</li><div><p>p p</p></div><div><p>p f</p></div></ul>"#;
+
     assert_eq!(html, test.to_htmx());
 }
