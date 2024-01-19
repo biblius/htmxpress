@@ -148,12 +148,16 @@ impl HtmxStruct {
                                 .as_ref()
                                 .unwrap_or_else(|| abort!(field.ident.span(), "invalid field"));
 
+                            let open = element.open();
+                            let close = element.close();
                             this.inner_tokens.extend(quote!(
                                 {
+                                    #open
                                     for el in self.#ident.iter() {
                                         let nested = el.to_htmx();
                                         let _ = write!(html, "{nested}");
                                     }
+                                    #close
                                 }
                             ));
 
@@ -176,7 +180,11 @@ impl HtmxStruct {
                         quote!(&self.#field_name)
                     };
 
+                    let open = element.open();
+                    let close = element.close();
+
                     let mut tokens = quote!(
+                        #open
                         {
                             let nested = #_self.to_htmx();
                             let _ = write!(html, "{nested}");
@@ -191,7 +199,14 @@ impl HtmxStruct {
                         )
                     }
 
+                    tokens = quote!(
+                        #tokens
+                        #close
+                    );
+
                     this.inner_tokens.extend(tokens);
+
+                    continue 'fields;
                 }
             }
 
@@ -240,6 +255,48 @@ impl syn::parse::Parse for MapExpr {
 }
 
 impl HtmxFieldElement {
+    fn open(&self) -> Option<TokenStream> {
+        let Self {
+            html_element,
+            attrs,
+            ..
+        } = self;
+
+        let element = html_element.as_ref().map(|el| quote!(let element = #el;))?;
+
+        let AttributeTokens {
+            static_attrs,
+            request,
+            dyn_attrs,
+            hx_attrs,
+        } = attrs.attr_tokens();
+
+        Some(quote!(
+            {
+                let mut attributes = String::new();
+                #dyn_attrs
+                #static_attrs
+                #hx_attrs
+                #request
+                #element
+                let _ = write!(html, r#"<{element}{request}{attributes}>"#);
+            }
+        ))
+    }
+
+    fn close(&self) -> Option<TokenStream> {
+        let element = self
+            .html_element
+            .as_ref()
+            .map(|el| quote!(let element = #el;))?;
+        Some(quote!(
+            {
+                #element
+                let _ = write!(html, "</{element}>");
+            }
+        ))
+    }
+
     fn to_tokens(&self, list: bool) -> TokenStream {
         let Self {
             field_name,
@@ -360,13 +417,13 @@ fn collect_htmx_field_el(
                 abort!(id.span(), "`map` attribute cannot be used with `default`")
             }
             element.map = Some(parse_expr(attr));
+            continue;
         }
 
         if id == DEFAULT_ATTR {
             if !optional {
                 abort!(id.span(), "`default` attr is valid only on options")
             }
-
             element.default = Some(parse_str(attr));
             continue;
         }
