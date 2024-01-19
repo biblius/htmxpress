@@ -38,6 +38,5 @@ fn works() {
 
     let htmx = r#"<div hx-post="/somewhere/something"><p hx-get="/somewhere/else">I am a p! Hello World!</p><div hx-get="/elsewhere" id="child" class="child-class"><p id="keepit69">Always keep it 69</p></div></div>"#;
 
-    println!("{}", parent.to_htmx());
     assert_eq!(htmx, parent.to_htmx());
 }

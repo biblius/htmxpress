@@ -5,7 +5,7 @@ use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
 use syn::{
     parse::ParseStream, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DeriveInput,
-    Ident, LitStr, MetaList, MetaNameValue, Token,
+    Expr, Ident, LitStr, MetaList, MetaNameValue, Token,
 };
 
 const ELEMENT_ATTR: &str = "element";
@@ -22,6 +22,7 @@ const HX_DELETE_ATTR: &str = "hx_delete";
 const ENCODE_ATTR: &str = "urlencode";
 const DEFAULT_ATTR: &str = "default";
 const HX_ATTR: &str = "hx";
+const MAP_ATTR: &str = "map";
 
 const HTMX_METHODS: [&str; 5] = [
     HX_GET_ATTR,
@@ -34,8 +35,8 @@ const HTMX_METHODS: [&str; 5] = [
 #[proc_macro_derive(
     Element,
     attributes(
-        element, list, attrs, attr, format, nest, urlencode, hx, hx_get, hx_post, hx_put, hx_patch,
-        hx_delete, default
+        element, list, attrs, attr, format, nest, urlencode, map, hx, hx_get, hx_post, hx_put,
+        hx_patch, hx_delete, default
     )
 )]
 #[proc_macro_error]
@@ -117,6 +118,7 @@ impl HtmxStruct {
                                 )
                             }
                             this.inner_tokens.extend(element.to_tokens(true));
+
                             continue 'fields;
                         }
                         Err(_) => {
@@ -154,6 +156,7 @@ impl HtmxStruct {
                                     }
                                 }
                             ));
+
                             continue 'fields;
                         }
                     }
@@ -217,6 +220,23 @@ struct HtmxFieldElement {
 
     /// The default value for None if used with optional
     default: Option<String>,
+
+    map: Option<MapExpr>,
+}
+
+#[derive(Debug)]
+struct MapExpr {
+    var: Ident,
+    expr: Expr,
+}
+
+impl syn::parse::Parse for MapExpr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let var = input.parse()?;
+        input.parse::<Token![=>]>()?;
+        let expr = input.parse()?;
+        Ok(Self { var, expr })
+    }
 }
 
 impl HtmxFieldElement {
@@ -227,6 +247,7 @@ impl HtmxFieldElement {
             attrs,
             optional,
             default,
+            map,
         } = self;
 
         let AttributeTokens {
@@ -248,6 +269,11 @@ impl HtmxFieldElement {
             .map(|fmt| {
                 if let Some(default) = default {
                     quote!(let content = format!(#fmt, #_self.as_deref().unwrap_or(#default));)
+                } else if let Some(MapExpr { var, expr }) = map {
+                    quote!(
+                        let #var = &#_self;
+                        let content = format!(#fmt, #expr);
+                    )
                 } else {
                     quote!(let content = format!(#fmt, #_self);)
                 }
@@ -255,6 +281,11 @@ impl HtmxFieldElement {
             .unwrap_or_else(|| {
                 if let Some(default) = default {
                     quote!(let content = format!("{}", #_self.as_deref().unwrap_or(#default));)
+                } else if let Some(MapExpr { var, expr }) = map {
+                    quote!(
+                        let #var = &#_self;
+                        let content = format!("{}", #expr);
+                    )
                 } else {
                     quote!(let content = format!("{}", #_self);)
                 }
@@ -311,6 +342,7 @@ fn collect_htmx_field_el(
         attrs: el_attrs,
         optional,
         default: None,
+        map: None,
     };
 
     let mut _attrs = attrs
@@ -323,9 +355,16 @@ fn collect_htmx_field_el(
             continue;
         };
 
+        if id == MAP_ATTR {
+            if _attrs.contains(&DEFAULT_ATTR.to_string()) {
+                abort!(id.span(), "`map` attribute cannot be used with `default`")
+            }
+            element.map = Some(parse_expr(attr));
+        }
+
         if id == DEFAULT_ATTR {
             if !optional {
-                abort!(id.span(), "the `default` attr is valid only on options")
+                abort!(id.span(), "`default` attr is valid only on options")
             }
 
             element.default = Some(parse_str(attr));
@@ -573,6 +612,18 @@ struct AttributeTokens {
 
     /// The hx-method tokens
     request: TokenStream,
+}
+
+fn parse_expr(attr: &Attribute) -> MapExpr {
+    let list = attr.meta.require_list().unwrap_or_else(|_| {
+        abort!(
+            attr.meta.span(),
+            r#"expected key value list, e.g. `hx("target" = "foo")`"#
+        )
+    });
+
+    list.parse_args()
+        .unwrap_or_else(|_| abort!(list.span(), "expected expression"))
 }
 
 fn parse_hx_attrs(attr: &Attribute) -> Vec<(String, String)> {
