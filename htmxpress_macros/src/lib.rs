@@ -23,6 +23,8 @@ const ENCODE_ATTR: &str = "urlencode";
 const DEFAULT_ATTR: &str = "default";
 const HX_ATTR: &str = "hx";
 const MAP_ATTR: &str = "map";
+const BEFORE_ATTR: &str = "before";
+const AFTER_ATTR: &str = "after";
 
 const HTMX_METHODS: [&str; 5] = [
     HX_GET_ATTR,
@@ -36,7 +38,7 @@ const HTMX_METHODS: [&str; 5] = [
     Element,
     attributes(
         element, list, attrs, attr, format, nest, urlencode, map, hx, hx_get, hx_post, hx_put,
-        hx_patch, hx_delete, default
+        hx_patch, hx_delete, default, before, after
     )
 )]
 #[proc_macro_error]
@@ -51,8 +53,8 @@ pub fn derive_element(input: proc_macro::TokenStream) -> proc_macro::TokenStream
     let ident = &strct.ident;
     let (im, ty, wh) = strct.generics.split_for_impl();
 
-    let parent_open = self_element.as_ref().map(HtmxStructElement::open);
-    let parent_close = self_element.as_ref().map(HtmxStructElement::close);
+    let parent_open = self_element.open();
+    let parent_close = self_element.close();
 
     quote::quote!(
         impl #im htmxpress::HtmxElement for #ident #ty #wh {
@@ -72,7 +74,7 @@ pub fn derive_element(input: proc_macro::TokenStream) -> proc_macro::TokenStream
 #[derive(Debug, Default)]
 struct HtmxStruct {
     /// Self html element
-    self_element: Option<HtmxStructElement>,
+    self_element: HtmxStructElement,
 
     /// Contains tokens for the HtmxElement impl
     /// obtained from fields and nested htmx structs
@@ -219,13 +221,51 @@ impl HtmxStruct {
     }
 }
 
+#[derive(Debug, Default)]
+struct HtmlElement {
+    /// The main element in question, obtained from `element`
+    el: String,
+
+    /// Text content to insert at the start of the element, obtained from `before`
+    before: Vec<String>,
+
+    /// Text content to insert at the end of the element, obtained from `after`
+    after: Vec<String>,
+}
+
+fn collect_html_element(attrs: &[Attribute]) -> Option<HtmlElement> {
+    let mut el = None;
+    let mut before = vec![];
+    let mut after = vec![];
+
+    for attr in attrs {
+        let Some(id) = attr.meta.path().get_ident() else {
+            continue;
+        };
+
+        if id == ELEMENT_ATTR {
+            el = Some(parse_str(attr));
+        }
+
+        if id == BEFORE_ATTR {
+            before.push(parse_str(attr))
+        }
+
+        if id == AFTER_ATTR {
+            after.push(parse_str(attr))
+        }
+    }
+
+    el.map(|el| HtmlElement { el, before, after })
+}
+
 #[derive(Debug)]
 struct HtmxFieldElement {
     /// Name of the field annotated with `element`
     field_name: Ident,
 
     /// The element from the attributes
-    html_element: Option<String>,
+    html_element: Option<HtmlElement>,
 
     /// Element attributes
     attrs: HtmlAttributes,
@@ -233,7 +273,7 @@ struct HtmxFieldElement {
     /// Necessary for tokens when the field is an option
     optional: bool,
 
-    /// The default value for None if used with optional
+    /// The default value for None if used with optional, obtained from `default`
     default: Option<String>,
 
     map: Option<MapExpr>,
@@ -262,7 +302,16 @@ impl HtmxFieldElement {
             ..
         } = self;
 
-        let element = html_element.as_ref().map(|el| quote!(let element = #el;))?;
+        let (element, before) =
+            html_element
+                .as_ref()
+                .map(|HtmlElement { el, before, .. }| {
+                    let before = before.iter().fold(String::new(), |mut acc, el| {
+                        acc.push_str(el);
+                        acc
+                    });
+                    (quote!(let element = #el;), quote!(let before = #before;))
+                })?;
 
         let AttributeTokens {
             static_attrs,
@@ -279,20 +328,28 @@ impl HtmxFieldElement {
                 #hx_attrs
                 #request
                 #element
-                let _ = write!(html, r#"<{element}{request}{attributes}>"#);
+                #before
+                let _ = write!(html, r#"<{element}{request}{attributes}>{before}"#);
             }
         ))
     }
 
     fn close(&self) -> Option<TokenStream> {
-        let element = self
-            .html_element
-            .as_ref()
-            .map(|el| quote!(let element = #el;))?;
+        let (element, after) =
+            self.html_element
+                .as_ref()
+                .map(|HtmlElement { el, after, .. }| {
+                    let after = after.iter().fold(String::new(), |mut acc, el| {
+                        acc.push_str(el);
+                        acc
+                    });
+                    (quote!(let element = #el;), quote!(let after = #after;))
+                })?;
         Some(quote!(
             {
                 #element
-                let _ = write!(html, "</{element}>");
+                #after
+                let _ = write!(html, "{after}</{element}>");
             }
         ))
     }
@@ -348,7 +405,30 @@ impl HtmxFieldElement {
                 }
             });
 
-        let element = quote!(let element = #html_element;);
+        let element = html_element
+            .as_ref()
+            .map(|HtmlElement { el, before, after }| {
+                let el_tokens = quote!(let element = #el;);
+                let before = before.iter().fold(String::new(), |mut acc, el| {
+                    acc.push_str(el);
+                    acc
+                });
+                let before_tokens = quote!(
+                    let before = #before;
+                );
+                let after = after.iter().fold(String::new(), |mut acc, el| {
+                    acc.push_str(el);
+                    acc
+                });
+                let after_tokens = quote!(
+                    let after = #after;
+                );
+                quote!(
+                    #el_tokens
+                    #before_tokens
+                    #after_tokens
+                )
+            });
 
         let mut el = quote!(
             {
@@ -359,7 +439,7 @@ impl HtmxFieldElement {
                 #request
                 #content
                 #element
-                let _ = write!(html, r#"<{element}{request}{attributes}>{content}</{element}>"#);
+                let _ = write!(html, r#"<{element}{request}{attributes}>{before}{content}{after}</{element}>"#);
             }
         );
 
@@ -391,11 +471,12 @@ fn collect_htmx_field_el(
     attrs: &[Attribute],
     optional: bool,
 ) -> HtmxFieldElement {
+    let el = collect_html_element(attrs);
     let el_attrs = collect_html_attrs(attrs);
 
     let mut element = HtmxFieldElement {
         field_name: field_name.clone(),
-        html_element: None,
+        html_element: el,
         attrs: el_attrs,
         optional,
         default: None,
@@ -427,10 +508,6 @@ fn collect_htmx_field_el(
             element.default = Some(parse_str(attr));
             continue;
         }
-
-        if id == ELEMENT_ATTR {
-            element.html_element = Some(parse_str(attr));
-        }
     }
 
     element
@@ -438,7 +515,7 @@ fn collect_htmx_field_el(
 
 #[derive(Debug, Default)]
 struct HtmxStructElement {
-    html_element: Option<String>,
+    html_element: Option<HtmlElement>,
     attrs: HtmlAttributes,
 }
 
@@ -449,7 +526,21 @@ impl HtmxStructElement {
             attrs,
         } = self;
 
-        let element = html_element.as_ref().map(|el| quote!(let element = #el;))?;
+        let (element, before) =
+            html_element
+                .as_ref()
+                .map(|HtmlElement { el, before, .. }| {
+                    let el_tokens = quote!(let element = #el;);
+                    let before = before.iter().fold(String::new(), |mut acc, el| {
+                        acc.push_str(el);
+                        acc
+                    });
+                    let before_tokens = quote!(
+                        let before = #before;
+                    );
+                    (el_tokens, before_tokens)
+                })?;
+
         let AttributeTokens {
             static_attrs,
             request,
@@ -465,20 +556,32 @@ impl HtmxStructElement {
                 #hx_attrs
                 #request
                 #element
-                let _ = write!(html, r#"<{element}{request}{attributes}>"#);
+                #before
+                let _ = write!(html, r#"<{element}{request}{attributes}>{before}"#);
             }
         ))
     }
 
     fn close(&self) -> Option<TokenStream> {
-        let element = self
-            .html_element
-            .as_ref()
-            .map(|el| quote!(let element = #el;))?;
+        let (element, after) =
+            self.html_element
+                .as_ref()
+                .map(|HtmlElement { el, after, .. }| {
+                    let el_tokens = quote!(let element = #el;);
+                    let after = after.iter().fold(String::new(), |mut acc, el| {
+                        acc.push_str(el);
+                        acc
+                    });
+                    let after_tokens = quote!(
+                        let after = #after;
+                    );
+                    (el_tokens, after_tokens)
+                })?;
         Some(quote!(
             {
                 #element
-                let _ = write!(html, "</{element}>");
+                #after
+                let _ = write!(html, "{after}</{element}>");
             }
         ))
     }
@@ -486,25 +589,14 @@ impl HtmxStructElement {
     /// Collect all attributes related to HTML
     ///
     /// Ignores the `nest` attribute
-    fn collect_from(attrs: &[Attribute]) -> Option<Self> {
+    fn collect_from(attrs: &[Attribute]) -> Self {
+        let el = collect_html_element(attrs);
         let el_attrs = collect_html_attrs(attrs);
 
-        let mut element = Self {
-            html_element: None,
+        Self {
+            html_element: el,
             attrs: el_attrs,
-        };
-
-        for attr in attrs {
-            let Some(id) = attr.meta.path().get_ident() else {
-                continue;
-            };
-
-            if id == ELEMENT_ATTR {
-                element.html_element = Some(parse_str(attr))
-            }
         }
-
-        Some(element)
     }
 }
 
