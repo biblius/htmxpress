@@ -380,16 +380,24 @@ impl HtmxFieldElement {
         let content = attrs
             .format_str
             .as_ref()
-            .map(|fmt| {
+            .map(|FormatParams { fmt, args }| {
+                let args = args.iter().map(|arg| {
+                    quote!(self.#arg)
+                });
+                
                 if let Some(default) = default {
-                    quote!(let content = format!(#fmt, #_self.as_deref().unwrap_or(#default));)
+                    quote!(
+                        let content = format!(#fmt, #_self.as_deref().unwrap_or(#default), #(#args),*);
+                    )
                 } else if let Some(MapExpr { var, expr }) = map {
                     quote!(
                         let #var = &#_self;
-                        let content = format!(#fmt, #expr);
+                        let content = format!(#fmt, #expr, #(#args),*);
                     )
                 } else {
-                    quote!(let content = format!(#fmt, #_self);)
+                    quote!(
+                        let content = format!(#fmt, #_self, #(#args),*);
+                    )
                 }
             })
             .unwrap_or_else(|| {
@@ -613,7 +621,7 @@ struct HtmlAttributes {
     hx_attributes: Vec<(String, String)>,
 
     /// Format string for the inner content.
-    format_str: Option<LitStr>,
+    format_str: Option<FormatParams>,
 
     /// hx-method attribute
     hx_req: Option<HtmxRequest>,
@@ -863,13 +871,17 @@ fn parse_str(attr: &Attribute) -> String {
         .value()
 }
 
-fn parse_format(attr: &Attribute) -> LitStr {
+fn parse_format(attr: &Attribute) -> FormatParams {
     let list = attr
         .meta
         .require_list()
         .unwrap_or_else(|_| abort!(attr.meta.span(), r#"expected list, e.g. htmx_get("/path")"#));
-    list.parse_args::<LitStr>()
-        .unwrap_or_else(|e| abort!(attr.meta.span(), format!("{e}")))
+
+    let fmt: FormatParams = list
+        .parse_args()
+        .unwrap_or_else(|e| abort!(attr.meta.span(), format!("{e}")));
+
+    fmt
 }
 
 fn parse_htmx_request(attr: &Attribute, encode: bool) -> HtmxRequest {
