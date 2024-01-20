@@ -1,6 +1,8 @@
 #![doc = include_str!(concat!("../", std::env!("CARGO_PKG_README")))]
 
 pub use htmxpress_macros::Element;
+
+#[cfg(feature = "urlencoding")]
 pub use urlencoding;
 
 pub trait HtmxElement {
