@@ -1,6 +1,6 @@
 [package]
 name = "htmxpress_macros"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["biblius <crazycompanyxxl@gmail.com>"]
 description = "Procedural macros for generating htmx strings"
