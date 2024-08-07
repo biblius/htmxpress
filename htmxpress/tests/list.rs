@@ -2,6 +2,7 @@ use htmxpress::{Element, HtmxElement};
 
 #[derive(Debug, Element)]
 #[element("ul")]
+#[before("<h1>Hello</h2>")]
 struct Test {
     #[list]
     #[element("li")]
@@ -29,7 +30,7 @@ fn works() {
         ],
     };
 
-    let html = r#"<ul><li>foo</li><li>bar</li><div><p>p p</p></div><div><p>p f</p></div></ul>"#;
+    let html = r#"<ul><h1>Hello</h2><li>foo</li><li>bar</li><div><p>p p</p></div><div><p>p f</p></div></ul>"#;
 
     assert_eq!(html, test.to_htmx());
 }

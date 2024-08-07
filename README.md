@@ -419,3 +419,5 @@ Todo List:
 - [x] Attributes for collections for ez lists
 - [] Response trait
 - [] hx headers for response trait
+- [] Self-closing elements
+- [] Additional meta elements for existing ones for integrating with head-support
